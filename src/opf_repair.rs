@@ -20,6 +20,8 @@ struct OpfState {
     identifier_ids: Vec<String>,
     vendor_identifier_ids: Vec<String>,
     has_modified: bool,
+    /// Contributor IDs that have role=bkp via EPUB3 <meta refines> pattern
+    bkp_contributor_ids: Vec<String>,
 }
 
 /// Repair OPF metadata.
@@ -54,6 +56,7 @@ fn analyze(input: &str) -> Result<OpfState, RepubError> {
         identifier_ids: Vec::new(),
         vendor_identifier_ids: Vec::new(),
         has_modified: false,
+        bkp_contributor_ids: Vec::new(),
     };
 
     let mut in_metadata = false;
@@ -62,6 +65,9 @@ fn analyze(input: &str) -> Result<OpfState, RepubError> {
     let mut current_identifier_id: Option<String> = None;
     let mut current_identifier_is_attr_vendor = false;
     let mut current_identifier_text = String::new();
+    // Track EPUB3 <meta refines="#id" property="role"> for bkp detection
+    let mut current_refines_target: Option<String> = None;
+    let mut reading_role_meta = false;
 
     loop {
         match reader.read_event() {
@@ -109,12 +115,32 @@ fn analyze(input: &str) -> Result<OpfState, RepubError> {
                         }
                     }
                     b"meta" if in_metadata => {
+                        let mut has_role_property = false;
+                        let mut refines_id = None;
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"property"
-                                && attr.value.as_ref() == b"dcterms:modified"
-                            {
-                                state.has_modified = true;
+                            match attr.key.as_ref() {
+                                b"property" => {
+                                    let val = attr.value.as_ref();
+                                    if val == b"dcterms:modified" {
+                                        state.has_modified = true;
+                                    }
+                                    if val == b"role" {
+                                        has_role_property = true;
+                                    }
+                                }
+                                b"refines" => {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    if let Some(id) = val.strip_prefix('#') {
+                                        refines_id = Some(id.to_owned());
+                                    }
+                                }
+                                _ => {}
                             }
+                        }
+                        // EPUB3: <meta refines="#id" property="role">bkp</meta>
+                        if has_role_property && refines_id.is_some() {
+                            current_refines_target = refines_id;
+                            reading_role_meta = true;
                         }
                     }
                     _ => {}
@@ -130,6 +156,17 @@ fn analyze(input: &str) -> Result<OpfState, RepubError> {
                         }
                     }
                     reading_language = false;
+                } else if reading_role_meta {
+                    // EPUB3 role meta: check if the role is "bkp"
+                    if let Ok(text) = e.unescape() {
+                        if text.trim().eq_ignore_ascii_case("bkp") {
+                            if let Some(ref id) = current_refines_target {
+                                state.bkp_contributor_ids.push(id.clone());
+                            }
+                        }
+                    }
+                    reading_role_meta = false;
+                    current_refines_target = None;
                 } else if current_identifier_id.is_some() && !current_identifier_is_attr_vendor {
                     // Buffer text — check on End event after all chunks collected
                     if let Ok(text) = e.unescape() {
@@ -276,6 +313,22 @@ fn rewrite(
                                         String::from_utf8_lossy(attr.key.as_ref())
                                     ),
                                 });
+                            } else if strip_proprietary && attr.key.as_ref() == b"prefix" {
+                                // Filter vendor entries from EPUB3 prefix attribute
+                                let cleaned =
+                                    strip_vendor_prefixes(&String::from_utf8_lossy(&attr.value));
+                                if cleaned.is_empty() {
+                                    fixes.push(Fix::ProprietaryMetadataRemoved {
+                                        detail: "vendor prefix declarations".into(),
+                                    });
+                                } else {
+                                    elem.push_attribute(("prefix", cleaned.as_str()));
+                                    if cleaned.len() < String::from_utf8_lossy(&attr.value).len() {
+                                        fixes.push(Fix::ProprietaryMetadataRemoved {
+                                            detail: "vendor prefix declarations".into(),
+                                        });
+                                    }
+                                }
                             } else {
                                 elem.push_attribute(attr);
                             }
@@ -352,7 +405,8 @@ fn rewrite(
 
                 // --- contributor: buffer ALL events for bkp tool detection ---
                 if in_metadata && local == b"contributor" && strip_proprietary {
-                    contributor_is_bkp = has_role_bkp(e);
+                    contributor_is_bkp =
+                        has_role_bkp(e) || has_bkp_via_refines(e, &state.bkp_contributor_ids);
                     reading_contributor = true;
                     contributor_text_buf.clear();
                     contributor_event_buf.clear();
@@ -630,6 +684,27 @@ fn is_vendor_xmlns(key: &[u8], value: &[u8]) -> bool {
         .any(|vendor_uri| uri.starts_with(vendor_uri))
 }
 
+/// Strip vendor entries from an EPUB3 `prefix` attribute value.
+/// Format: `prefix: uri prefix2: uri2` — space-separated pairs.
+/// e.g. `calibre: http://calibre.kovidgoyal.net/2009/metadata rendition: http://...`
+fn strip_vendor_prefixes(prefix_attr: &str) -> String {
+    // Parse prefix declarations: each is "name: URI" separated by whitespace
+    let mut result = Vec::new();
+    let mut iter = prefix_attr.split_whitespace().peekable();
+    while let Some(token) = iter.next() {
+        if token.ends_with(':') {
+            // This is a prefix name, next token is the URI
+            if let Some(uri) = iter.next() {
+                let is_vendor = VENDOR_XMLNS_URIS.iter().any(|v| uri.starts_with(v));
+                if !is_vendor {
+                    result.push(format!("{token} {uri}"));
+                }
+            }
+        }
+    }
+    result.join(" ")
+}
+
 // ---------------------------------------------------------------------------
 // Vendor identifier detection
 // ---------------------------------------------------------------------------
@@ -645,7 +720,7 @@ const VENDOR_SCHEMES: &[&str] = &[
 ];
 
 /// Vendor-specific identifier content prefixes.
-const VENDOR_CONTENT_PREFIXES: &[&str] = &["urn:amazon:asin:"];
+const VENDOR_CONTENT_PREFIXES: &[&str] = &["urn:amazon:asin:", "calibre:", "google:"];
 
 /// Prefixes that indicate a standard (non-vendor) identifier — always preserve.
 const PRESERVE_CONTENT_PREFIXES: &[&str] = &["urn:isbn:", "urn:uuid:", "urn:doi:", "doi:"];
@@ -708,34 +783,52 @@ const STRIP_META_PREFIXES: &[&str] = &[
 const KEEP_META: &[&str] = &["calibre:series", "calibre:series_index"];
 
 fn is_tool_metadata(e: &BytesStart<'_>) -> bool {
+    // Check both EPUB2 `name` attribute and EPUB3 `property` attribute
     let mut name_val = None;
+    let mut property_val = None;
     for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == b"name" {
-            name_val = Some(String::from_utf8_lossy(&attr.value).into_owned());
+        match attr.key.as_ref() {
+            b"name" => name_val = Some(String::from_utf8_lossy(&attr.value).into_owned()),
+            b"property" => property_val = Some(String::from_utf8_lossy(&attr.value).into_owned()),
+            _ => {}
         }
     }
 
-    let Some(name) = name_val else {
-        return false;
-    };
+    // Check name attribute (EPUB2: <meta name="calibre:timestamp" content="..."/>)
+    if let Some(ref name) = name_val {
+        if is_strippable_meta_name(name) {
+            return true;
+        }
+    }
 
+    // Check property attribute (EPUB3: <meta property="calibre:timestamp">...</meta>)
+    if let Some(ref prop) = property_val {
+        if is_strippable_meta_name(prop) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn is_strippable_meta_name(name: &str) -> bool {
     // Preserve calibre:series and calibre:series_index
     if KEEP_META.iter().any(|k| name.eq_ignore_ascii_case(k)) {
         return false;
     }
 
-    let name_lower = name.to_lowercase();
+    let lower = name.to_lowercase();
 
     // Strip calibre:* and Sigil metadata (case-insensitive)
     if STRIP_META_PREFIXES
         .iter()
-        .any(|p| name_lower.starts_with(&p.to_lowercase()))
+        .any(|p| lower.starts_with(&p.to_lowercase()))
     {
         return true;
     }
 
     // Sigil version
-    if name_lower == "sigil version" {
+    if lower == "sigil version" {
         return true;
     }
 
@@ -773,6 +866,17 @@ fn has_role_bkp(e: &BytesStart<'_>) -> bool {
             if val.trim().eq_ignore_ascii_case("bkp") {
                 return true;
             }
+        }
+    }
+    false
+}
+
+/// Check if a contributor element has an `id` that was marked as bkp via EPUB3 refines.
+fn has_bkp_via_refines(e: &BytesStart<'_>, bkp_ids: &[String]) -> bool {
+    for attr in e.attributes().flatten() {
+        if attr.key.as_ref() == b"id" {
+            let id = String::from_utf8_lossy(&attr.value);
+            return bkp_ids.iter().any(|bkp| bkp == id.as_ref());
         }
     }
     false
