@@ -684,6 +684,8 @@ const VENDOR_XMLNS_URIS: &[&str] = &[
     "https://calibre-ebook.com",
     "http://apple.com/ibooks",
     "https://apple.com/ibooks",
+    "http://vocabulary.itunes.apple.com/rdf/ibooks/",
+    "https://vocabulary.itunes.apple.com/rdf/ibooks/",
 ];
 
 /// Returns true if an attribute is a known vendor xmlns declaration.
@@ -791,6 +793,7 @@ const STRIP_META_PREFIXES: &[&str] = &[
     "calibre:rating",
     "calibre:user_categories",
     "calibre:user_metadata:",
+    "calibre:user_metadata",
     "ibooks:specified-fonts",
     "ibooks:version",
     "ibooks:binding",
