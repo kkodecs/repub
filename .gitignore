@@ -1,0 +1,8 @@
+/target
+Cargo.lock
+
+# Process artifacts
+build/reviews/
+.serena/
+.mcp.json
+build/plan-repub.md

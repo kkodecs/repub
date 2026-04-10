@@ -1,0 +1,33 @@
+[package]
+name = "repub"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+description = "The missing EPUB repair tool"
+repository = "https://github.com/kkodecs/repub"
+
+[[bin]]
+name = "repub"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+quick-xml = "0.37"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+zip = "2"
+
+[dev-dependencies]
+rstest = "0.24"
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+unwrap_used = "deny"
