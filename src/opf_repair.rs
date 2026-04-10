@@ -414,6 +414,14 @@ fn rewrite(
                     continue;
                 }
 
+                // --- skip EPUB3 tool metadata (Start+Text+End form) ---
+                if in_metadata && local == b"meta" && strip_proprietary && is_tool_metadata(e) {
+                    let detail = tool_meta_detail(e);
+                    fixes.push(Fix::ProprietaryMetadataRemoved { detail });
+                    skip_depth = 1;
+                    continue;
+                }
+
                 // --- pass through ---
                 writer.write_event(Event::Start(e.clone().into_owned()))?;
             }
@@ -669,7 +677,13 @@ fn is_valid_language(s: &str) -> bool {
 /// custom vocabularies via the `prefix` attribute that are legitimate.
 const VENDOR_XMLNS_URIS: &[&str] = &[
     "http://calibre.kovidgoyal.net/",
+    "https://calibre.kovidgoyal.net/",
     "http://calibre-ebook.com/",
+    "https://calibre-ebook.com/",
+    "http://calibre-ebook.com",
+    "https://calibre-ebook.com",
+    "http://apple.com/ibooks",
+    "https://apple.com/ibooks",
 ];
 
 /// Returns true if an attribute is a known vendor xmlns declaration.
@@ -777,6 +791,10 @@ const STRIP_META_PREFIXES: &[&str] = &[
     "calibre:rating",
     "calibre:user_categories",
     "calibre:user_metadata:",
+    "ibooks:specified-fonts",
+    "ibooks:version",
+    "ibooks:binding",
+    "ibooks:scroll-axis",
 ];
 
 /// Meta names to preserve (even though they start with "calibre:").
@@ -837,7 +855,7 @@ fn is_strippable_meta_name(name: &str) -> bool {
 
 fn tool_meta_detail(e: &BytesStart<'_>) -> String {
     for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == b"name" {
+        if attr.key.as_ref() == b"name" || attr.key.as_ref() == b"property" {
             return String::from_utf8_lossy(&attr.value).into_owned();
         }
     }
