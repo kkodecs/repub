@@ -801,7 +801,11 @@ const STRIP_META_PREFIXES: &[&str] = &[
 ];
 
 /// Meta names to preserve (even though they start with "calibre:").
-const KEEP_META: &[&str] = &["calibre:series", "calibre:series_index"];
+const KEEP_META: &[&str] = &[
+    "calibre:series",
+    "calibre:series_index",
+    "cover", // EPUB2 cover image reference — load-bearing
+];
 
 fn is_tool_metadata(e: &BytesStart<'_>) -> bool {
     // Check both EPUB2 `name` attribute and EPUB3 `property` attribute
